@@ -1,0 +1,18 @@
+<Solution>
+  <Configurations>
+    <Platform Name="Any CPU" />
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Folder Name="/src/">
+    <Project Path="src/PulseView.App.Controls/PulseView.App.Controls.csproj" />
+    <Project Path="src/PulseView.App.NativeInterop/PulseView.App.NativeInterop.csproj" />
+    <Project Path="src/PulseView.App.Tests/PulseView.App.Tests.csproj" />
+    <Project Path="src/PulseView.App.ViewModels/PulseView.App.ViewModels.csproj" />
+    <Project Path="src/PulseView.App/PulseView.App.csproj">
+      <Platform Solution="*|Any CPU" Project="x86" />
+      <Platform Solution="*|x64" Project="x64" />
+      <Platform Solution="*|x86" Project="x86" />
+    </Project>
+  </Folder>
+</Solution>

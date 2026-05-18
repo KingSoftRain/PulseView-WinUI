@@ -1,0 +1,35 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MSTest" Version="4.0.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\PulseView.App.NativeInterop\PulseView.App.NativeInterop.csproj" />
+    <ProjectReference Include="..\PulseView.App.ViewModels\PulseView.App.ViewModels.csproj" />
+  </ItemGroup>
+
+  <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)..\..\build\native\src\PulseView.NativeBridge\PulseView.NativeBridge.dll')">
+    <None Include="$(MSBuildThisFileDirectory)..\..\build\native\src\PulseView.NativeBridge\PulseView.NativeBridge.dll"
+          Link="PulseView.NativeBridge.dll"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)..\..\build\native\src\PulseView.Rendering.Native\PulseView.Rendering.Native.dll')">
+    <None Include="$(MSBuildThisFileDirectory)..\..\build\native\src\PulseView.Rendering.Native\PulseView.Rendering.Native.dll"
+          Link="PulseView.Rendering.Native.dll"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>
