@@ -11,6 +11,8 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     private const int MaximumCachedDecodeAnnotations = 8192;
     private const int MaximumVisibleDecodeAnnotations = 1024;
     private const double CaptureCompletionToleranceSeconds = 1.0e-12;
+    private const double HardwareDigitalPointMinimumPixelSpacing = 7.0;
+    private const byte DigitalPointFlag = 8;
     private static readonly CaptureDeviceOption DemoDevice = new(
         "demo",
         "Demo Device",
@@ -36,7 +38,26 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
 
     private static readonly ProtocolDecoderOption[] AllDecoders = [
         new(ProtocolDecoderKind.None, "No decoder"),
-        new(ProtocolDecoderKind.Uart, "UART 8N1"),
+        new(ProtocolDecoderKind.Uart, "UART"),
+    ];
+
+    private static readonly DecoderColorOption[] AllDecoderColors = [
+        new("Yellow", 0xFA, 0xCC, 0x15),
+        new("Blue", 0x3B, 0x82, 0xF6),
+        new("Cyan", 0x06, 0xB6, 0xD4),
+        new("Teal", 0x14, 0xB8, 0xA6),
+        new("Green", 0x22, 0xC5, 0x5E),
+        new("Lime", 0x84, 0xCC, 0x16),
+        new("Orange", 0xF9, 0x73, 0x16),
+        new("Red", 0xEF, 0x44, 0x44),
+        new("Rose", 0xF4, 0x3F, 0x5E),
+        new("Pink", 0xEC, 0x48, 0x99),
+        new("Purple", 0xA8, 0x55, 0xF7),
+        new("Violet", 0x8B, 0x5C, 0xF6),
+        new("Indigo", 0x63, 0x66, 0xF1),
+        new("Sky", 0x0E, 0xA5, 0xE9),
+        new("Amber", 0xF5, 0x9E, 0x0B),
+        new("Slate", 0x94, 0xA3, 0xB8),
     ];
 
     private static readonly TriggerEdgeOption[] AllTriggerEdges = [
@@ -48,6 +69,9 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
 
     private static readonly int[] ChannelCountChoices = [1, 2, 4, 8];
     private static readonly int[] BaudRateChoices = [9_600, 57_600, 115_200, 1_000_000];
+    private static readonly int[] DataBitChoices = [5, 6, 7, 8];
+    private static readonly string[] StopBitChoices = ["1", "1.5", "2"];
+    private static readonly string[] ParityChoices = ["None", "Odd", "Even", "Mark", "Space"];
 
     private readonly ISessionService _sessionService;
     private readonly IHardwareDeviceProbe _hardwareDeviceProbe;
@@ -67,9 +91,16 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     private int _triggerChannelIndex;
     private int _decoderChannelIndex;
     private int _decoderBaudRate = 115_200;
+    private int _decoderDataBits = 8;
+    private string _decoderStopBits = StopBitChoices[0];
+    private string _decoderParity = ParityChoices[0];
+    private DecoderColorOption _decoderColor = AllDecoderColors[0];
     private string[] _decoderChannelOptions = [];
+    private ConfiguredDecoder[] _configuredDecoders = [];
     private DecodedAnnotation[] _decodeAnnotations = [];
     private CaptureDeviceConnection? _deviceConnection;
+    private int _nextDecoderId = 1;
+    private int? _editingDecoderId;
     private int _signalCount;
     private int _digitalChannelCount = 1;
     private int _analogChannelCount;
@@ -123,6 +154,8 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             if (SetProperty(ref _selectedDevice, value)) {
                 OnPropertyChanged(nameof(DeviceStatusSummary));
                 OnPropertyChanged(nameof(CanAcquireSelectedDevice));
+                OnPropertyChanged(nameof(CanLoadSelectedDevice));
+                OnPropertyChanged(nameof(IsSelectedDeviceLoaded));
             }
         }
     }
@@ -135,11 +168,19 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
 
     public IReadOnlyList<ProtocolDecoderOption> DecoderOptions => AllDecoders;
 
+    public IReadOnlyList<DecoderColorOption> DecoderColorOptions => AllDecoderColors;
+
     public IReadOnlyList<TriggerEdgeOption> TriggerEdgeOptions => AllTriggerEdges;
 
     public IReadOnlyList<string> DecoderChannelOptions => _decoderChannelOptions;
 
     public IReadOnlyList<int> DecoderBaudRateOptions => BaudRateChoices;
+
+    public IReadOnlyList<int> DecoderDataBitOptions => DataBitChoices;
+
+    public IReadOnlyList<string> DecoderStopBitOptions => StopBitChoices;
+
+    public IReadOnlyList<string> DecoderParityOptions => ParityChoices;
 
     public CaptureSampleRateOption SelectedSampleRate => _selectedSampleRate;
 
@@ -157,6 +198,16 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
 
     public int DecoderBaudRate => _decoderBaudRate;
 
+    public int DecoderDataBits => _decoderDataBits;
+
+    public string DecoderStopBits => _decoderStopBits;
+
+    public string DecoderParity => _decoderParity;
+
+    public DecoderColorOption DecoderColor => _decoderColor;
+
+    public IReadOnlyList<ConfiguredDecoder> ConfiguredDecoders => _configuredDecoders;
+
     public IReadOnlyList<DecodedAnnotation> DecodeAnnotations => _decodeAnnotations;
 
     public IReadOnlyList<string> DeviceConnectionDetails => _deviceConnection?.Details ?? [];
@@ -164,7 +215,13 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     public bool CanAcquireSelectedDevice => SelectedDevice.IsDemo
         || (_isHardwareDeviceLoaded && SelectedDevice.Kind == CaptureDeviceKind.SLogicCombo8Logic);
 
-    public int DecoderRowCount => SelectedDecoder.Kind == ProtocolDecoderKind.None ? 0 : 1;
+    public bool CanLoadSelectedDevice => IsSelectedDeviceLoaded || SelectedDevice.CanAcquire;
+
+    public bool IsSelectedDeviceLoaded => SelectedDevice.IsDemo
+        ? IsDemoDeviceLoaded
+        : _isHardwareDeviceLoaded && SelectedDevice.Kind == CaptureDeviceKind.SLogicCombo8Logic;
+
+    public int DecoderRowCount => _configuredDecoders.Length;
 
     public string StatusMessage
     {
@@ -232,6 +289,8 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         {
             if (SetProperty(ref _isDemoDeviceLoaded, value)) {
                 OnPropertyChanged(nameof(CanAcquireSelectedDevice));
+                OnPropertyChanged(nameof(CanLoadSelectedDevice));
+                OnPropertyChanged(nameof(IsSelectedDeviceLoaded));
             }
         }
     }
@@ -285,7 +344,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
 
     public string AcquisitionSummary => IsAcquiring ? "Acquisition: running" : "Acquisition: stopped";
 
-    public string DeviceStatusSummary => $"{SelectedDevice.DriverName}: {SelectedDevice.Status}";
+    public string DeviceStatusSummary => $"Device status: {SelectedDeviceStatus}";
 
     public string DeviceTransportSummary => _deviceConnection?.Summary ?? "Transport: not connected";
 
@@ -298,9 +357,32 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         }
     }
 
-    public string DecodeSummary => SelectedDecoder.Kind == ProtocolDecoderKind.None
+    public string DecodeSummary => DecoderRowCount == 0
         ? "Decoder: off"
-        : $"Decoder: {SelectedDecoder.Label} on D{DecoderChannelIndex}, {DecoderBaudRate} baud, {DecodeAnnotations.Count} annotations";
+        : $"Decoders: {DecoderRowCount}, {DecodeAnnotations.Count} annotations";
+
+    private string DecoderFrameFormat => $"{DecoderDataBits}{ParityCode}{DecoderStopBits}";
+
+    private string ParityCode => DecoderParity switch
+    {
+        "Odd" => "O",
+        "Even" => "E",
+        "Mark" => "M",
+        "Space" => "S",
+        _ => "N",
+    };
+
+    private string SelectedDeviceStatus
+    {
+        get
+        {
+            if (SelectedDevice.CanAcquire) {
+                return "ready";
+            }
+
+            return IsDisconnectedStatus(SelectedDevice.Status) ? "disconnected" : "unknown";
+        }
+    }
 
     public string TriggerSummary => SelectedTriggerEdge.Kind == TriggerEdgeKind.None
         ? "trigger off"
@@ -309,7 +391,8 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     public void RefreshDevices()
     {
         var scannedDevices = _hardwareDeviceProbe.ScanDevices()
-            .Where(device => device.Kind == CaptureDeviceKind.SLogicCombo8Logic);
+            .Where(device => device.Kind is CaptureDeviceKind.SLogicCombo8Logic or CaptureDeviceKind.UnknownUsb)
+            .Select(ProbeDeviceReadiness);
         var nextDevices = new List<CaptureDeviceOption> { DemoDevice };
         nextDevices.AddRange(DeduplicateCaptureDevices(scannedDevices));
         _deviceOptions = nextDevices.ToArray();
@@ -317,7 +400,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
 
         var matchingSelection = _deviceOptions.FirstOrDefault(device => StringComparer.OrdinalIgnoreCase.Equals(device.Id, SelectedDevice.Id));
         SelectedDevice = matchingSelection ?? DemoDevice;
-        ClearDeviceConnection();
+        ResetLoadedDeviceState();
         StatusMessage = SelectedDevice.Status;
     }
 
@@ -343,14 +426,25 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             return;
         }
 
-        SelectedDevice = device;
-        ClearDeviceConnection();
-        StatusMessage = device.Status;
+        var normalizedDevice = NormalizeCaptureDevice(device);
+        var nextDevice = _deviceOptions.FirstOrDefault(option => StringComparer.OrdinalIgnoreCase.Equals(option.Id, normalizedDevice.Id))
+            ?? normalizedDevice;
+        if (!StringComparer.OrdinalIgnoreCase.Equals(SelectedDevice.Id, nextDevice.Id)) {
+            ResetLoadedDeviceState();
+        }
+
+        SelectedDevice = nextDevice;
+        StatusMessage = SelectedDevice.Status;
     }
 
     public void ConnectSelectedDevice()
     {
         StopAcquisition();
+        if (!SelectedDevice.CanAcquire) {
+            StatusMessage = SelectedDevice.Status;
+            return;
+        }
+
         if (SelectedDevice.IsDemo) {
             LoadDemoDevice();
             return;
@@ -359,6 +453,17 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         _deviceConnection = _hardwareTransportInspector.Inspect(SelectedDevice);
         OnPropertyChanged(nameof(DeviceTransportSummary));
         OnPropertyChanged(nameof(DeviceConnectionDetails));
+        if (!_deviceConnection.IsConnected) {
+            var failedDevice = SelectedDevice with { CanAcquire = false, Status = ClassifyConnectionStatus(_deviceConnection.Summary) };
+            _deviceOptions = _deviceOptions
+                .Select(device => StringComparer.OrdinalIgnoreCase.Equals(device.Id, failedDevice.Id) ? failedDevice : device)
+                .ToArray();
+            OnPropertyChanged(nameof(DeviceOptions));
+            SelectedDevice = failedDevice;
+            StatusMessage = _deviceConnection.Summary;
+            return;
+        }
+
         IsDemoDeviceLoaded = false;
         SetHardwareDeviceLoaded(true);
         CurrentFilePath = SelectedDevice.DisplayName;
@@ -371,6 +476,16 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         ViewportStartSeconds = 0.0;
         ClearDecodeAnnotations();
         StatusMessage = _deviceConnection.Summary;
+    }
+
+    public void DisconnectSelectedDevice()
+    {
+        if (!IsSelectedDeviceLoaded) {
+            return;
+        }
+
+        ResetLoadedDeviceState();
+        StatusMessage = "Device disconnected";
     }
 
     public void SetActiveDigitalChannelCount(int channelCount)
@@ -459,6 +574,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         }
 
         _selectedDecoder = decoder;
+        UpdateEditingDecoder();
         RebuildDecodeAnnotations();
         OnPropertyChanged(nameof(SelectedDecoder));
         OnPropertyChanged(nameof(DecoderRowCount));
@@ -473,6 +589,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         }
 
         _decoderChannelIndex = nextChannelIndex;
+        UpdateEditingDecoder();
         RebuildDecodeAnnotations();
         OnPropertyChanged(nameof(DecoderChannelIndex));
         OnPropertyChanged(nameof(DecodeSummary));
@@ -485,8 +602,121 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         }
 
         _decoderBaudRate = baudRate;
+        UpdateEditingDecoder();
         RebuildDecodeAnnotations();
         OnPropertyChanged(nameof(DecoderBaudRate));
+        OnPropertyChanged(nameof(DecodeSummary));
+    }
+
+    public void SetDecoderDataBits(int dataBits)
+    {
+        if (!DataBitChoices.Contains(dataBits) || _decoderDataBits == dataBits) {
+            return;
+        }
+
+        _decoderDataBits = dataBits;
+        UpdateEditingDecoder();
+        RebuildDecodeAnnotations();
+        OnPropertyChanged(nameof(DecoderDataBits));
+        OnPropertyChanged(nameof(DecodeSummary));
+    }
+
+    public void SetDecoderStopBits(string? stopBits)
+    {
+        if (stopBits is null || !StopBitChoices.Contains(stopBits) || _decoderStopBits == stopBits) {
+            return;
+        }
+
+        _decoderStopBits = stopBits;
+        UpdateEditingDecoder();
+        RebuildDecodeAnnotations();
+        OnPropertyChanged(nameof(DecoderStopBits));
+        OnPropertyChanged(nameof(DecodeSummary));
+    }
+
+    public void SetDecoderParity(string? parity)
+    {
+        if (parity is null || !ParityChoices.Contains(parity) || _decoderParity == parity) {
+            return;
+        }
+
+        _decoderParity = parity;
+        UpdateEditingDecoder();
+        RebuildDecodeAnnotations();
+        OnPropertyChanged(nameof(DecoderParity));
+        OnPropertyChanged(nameof(DecodeSummary));
+    }
+
+    public void SetDecoderColor(DecoderColorOption? color)
+    {
+        if (color is null || !AllDecoderColors.Contains(color) || _decoderColor == color) {
+            return;
+        }
+
+        _decoderColor = color;
+        UpdateEditingDecoder();
+        RebuildDecodeAnnotations();
+        OnPropertyChanged(nameof(DecoderColor));
+        OnPropertyChanged(nameof(DecodeSummary));
+    }
+
+    public void AddConfiguredDecoder()
+    {
+        if (SelectedDecoder.Kind == ProtocolDecoderKind.None) {
+            return;
+        }
+
+        _configuredDecoders = [
+            .. _configuredDecoders,
+            CreateConfiguredDecoder(_nextDecoderId++),
+        ];
+        _editingDecoderId = null;
+        RebuildDecodeAnnotations();
+        OnPropertyChanged(nameof(ConfiguredDecoders));
+        OnPropertyChanged(nameof(DecoderRowCount));
+        OnPropertyChanged(nameof(DecodeSummary));
+    }
+
+    public void EditConfiguredDecoder(int decoderId)
+    {
+        var decoder = _configuredDecoders.FirstOrDefault(item => item.Id == decoderId);
+        if (decoder is null) {
+            return;
+        }
+
+        _editingDecoderId = decoder.Id;
+        _selectedDecoder = decoder.Protocol;
+        _decoderChannelIndex = Math.Clamp(decoder.ChannelIndex, 0, Math.Max(0, ActiveDigitalChannelCount - 1));
+        _decoderBaudRate = decoder.BaudRate;
+        _decoderDataBits = decoder.DataBits;
+        _decoderStopBits = decoder.StopBits;
+        _decoderParity = decoder.Parity;
+        _decoderColor = decoder.Color;
+        OnPropertyChanged(nameof(SelectedDecoder));
+        OnPropertyChanged(nameof(DecoderChannelIndex));
+        OnPropertyChanged(nameof(DecoderBaudRate));
+        OnPropertyChanged(nameof(DecoderDataBits));
+        OnPropertyChanged(nameof(DecoderStopBits));
+        OnPropertyChanged(nameof(DecoderParity));
+        OnPropertyChanged(nameof(DecoderColor));
+        OnPropertyChanged(nameof(DecodeSummary));
+    }
+
+    public void RemoveConfiguredDecoder(int decoderId)
+    {
+        var nextDecoders = _configuredDecoders.Where(decoder => decoder.Id != decoderId).ToArray();
+        if (nextDecoders.Length == _configuredDecoders.Length) {
+            return;
+        }
+
+        _configuredDecoders = nextDecoders;
+        if (_editingDecoderId == decoderId) {
+            _editingDecoderId = null;
+        }
+
+        RebuildDecodeAnnotations();
+        OnPropertyChanged(nameof(ConfiguredDecoders));
+        OnPropertyChanged(nameof(DecoderRowCount));
         OnPropertyChanged(nameof(DecodeSummary));
     }
 
@@ -625,7 +855,20 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         }
 
         if (_isHardwareDeviceLoaded && _hardwareCaptureStopwatch.IsRunning) {
-            _hardwareCapturedDurationSeconds = _hardwareCaptureStopwatch.Elapsed.TotalSeconds;
+            var targetDurationSeconds = SelectedSampleCount.Samples / (double)SelectedSampleRate.SamplesPerSecond;
+            var currentDurationSeconds = _hardwareCaptureStopwatch.Elapsed.TotalSeconds;
+            if (currentDurationSeconds + CaptureCompletionToleranceSeconds >= targetDurationSeconds) {
+                _hardwareCaptureStopwatch.Stop();
+                _hardwareCapturedDurationSeconds = targetDurationSeconds;
+                DurationSeconds = targetDurationSeconds;
+                IsAcquiring = false;
+                RebuildDecodeAnnotations();
+                StatusMessage = $"{SelectedDevice.DisplayName} acquisition complete";
+                OnPropertyChanged(nameof(AcquisitionSummary));
+                return;
+            }
+
+            _hardwareCapturedDurationSeconds = currentDurationSeconds;
             DurationSeconds = _hardwareCapturedDurationSeconds;
         }
 
@@ -756,6 +999,16 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             OnPropertyChanged(nameof(DecoderChannelIndex));
         }
 
+        var maxChannelIndex = Math.Max(0, ActiveDigitalChannelCount - 1);
+        var nextDecoders = _configuredDecoders
+            .Select(decoder => decoder.ChannelIndex > maxChannelIndex ? decoder with { ChannelIndex = maxChannelIndex } : decoder)
+            .ToArray();
+        if (!nextDecoders.SequenceEqual(_configuredDecoders)) {
+            _configuredDecoders = nextDecoders;
+            OnPropertyChanged(nameof(ConfiguredDecoders));
+            RebuildDecodeAnnotations();
+        }
+
         OnPropertyChanged(nameof(DecoderChannelOptions));
     }
 
@@ -784,6 +1037,62 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(DeviceConnectionDetails));
     }
 
+    private void ResetLoadedDeviceState()
+    {
+        StopAcquisition();
+        _demoCapture.Reset();
+        IsDemoDeviceLoaded = false;
+        SetHardwareDeviceLoaded(false);
+        ClearDeviceConnection();
+        CurrentFilePath = string.Empty;
+        SignalCount = 0;
+        DigitalChannelCount = 1;
+        AnalogChannelCount = 0;
+        DurationSeconds = 0.0;
+        ViewportStartSeconds = 0.0;
+        SecondsPerPixel = DefaultSecondsPerPixel;
+        ClearDecodeAnnotations();
+        OnPropertyChanged(nameof(AcquisitionSummary));
+    }
+
+    private ConfiguredDecoder CreateConfiguredDecoder(int id)
+    {
+        return new ConfiguredDecoder(
+            id,
+            SelectedDecoder,
+            DecoderChannelIndex,
+            DecoderBaudRate,
+            DecoderDataBits,
+            DecoderStopBits,
+            DecoderParity,
+            DecoderColor);
+    }
+
+    private void UpdateEditingDecoder()
+    {
+        if (_editingDecoderId is not { } decoderId) {
+            return;
+        }
+
+        var nextDecoder = CreateConfiguredDecoder(decoderId);
+        var updated = false;
+        _configuredDecoders = _configuredDecoders
+            .Select(decoder =>
+            {
+                if (decoder.Id != decoderId) {
+                    return decoder;
+                }
+
+                updated = true;
+                return nextDecoder;
+            })
+            .ToArray();
+        if (updated) {
+            OnPropertyChanged(nameof(ConfiguredDecoders));
+            OnPropertyChanged(nameof(DecoderRowCount));
+        }
+    }
+
     private void SetHardwareDeviceLoaded(bool isLoaded)
     {
         if (_isHardwareDeviceLoaded == isLoaded) {
@@ -792,6 +1101,41 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
 
         _isHardwareDeviceLoaded = isLoaded;
         OnPropertyChanged(nameof(CanAcquireSelectedDevice));
+        OnPropertyChanged(nameof(CanLoadSelectedDevice));
+        OnPropertyChanged(nameof(IsSelectedDeviceLoaded));
+    }
+
+    private static CaptureDeviceOption NormalizeCaptureDevice(CaptureDeviceOption device)
+    {
+        return device.Kind == CaptureDeviceKind.SLogicCombo8Logic
+            ? device with { DisplayName = "SLogic Combo 8", DriverName = "SLogic Combo 8" }
+            : device;
+    }
+
+    private CaptureDeviceOption ProbeDeviceReadiness(CaptureDeviceOption device)
+    {
+        var normalizedDevice = NormalizeCaptureDevice(device);
+        if (normalizedDevice.Kind != CaptureDeviceKind.SLogicCombo8Logic) {
+            return normalizedDevice;
+        }
+
+        var connection = _hardwareTransportInspector.Inspect(normalizedDevice);
+        return connection.IsConnected
+            ? normalizedDevice with { CanAcquire = true, Status = "Ready" }
+            : normalizedDevice with { CanAcquire = false, Status = ClassifyConnectionStatus(connection.Summary) };
+    }
+
+    private static string ClassifyConnectionStatus(string status)
+    {
+        return IsDisconnectedStatus(status) ? "Disconnected" : "Unknown";
+    }
+
+    private static bool IsDisconnectedStatus(string status)
+    {
+        return status.Contains("disconnect", StringComparison.OrdinalIgnoreCase)
+            || status.Contains("not detected", StringComparison.OrdinalIgnoreCase)
+            || status.Contains("No WinUSB device interface path", StringComparison.OrdinalIgnoreCase)
+            || status.Contains("not found", StringComparison.OrdinalIgnoreCase);
     }
 
     private void StartHardwareAcquisition()
@@ -821,21 +1165,24 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
 
     private void RebuildDecodeAnnotations()
     {
-        DecodedAnnotation[] annotations = [];
-        if (IsDemoDeviceLoaded && DurationSeconds > 0.0 && SelectedDecoder.Kind == ProtocolDecoderKind.Uart) {
-            annotations = _demoCapture.QueryUartAnnotations(
-                0.0,
-                DurationSeconds,
-                DecoderChannelIndex,
-                DecoderBaudRate,
-                maxAnnotations: MaximumCachedDecodeAnnotations).ToArray();
+        var annotations = new List<DecodedAnnotation>();
+        if (IsDemoDeviceLoaded && DurationSeconds > 0.0) {
+            foreach (var decoder in _configuredDecoders.Where(IsDemoUartDecoderCompatible)) {
+                annotations.AddRange(_demoCapture.QueryUartAnnotations(
+                    0.0,
+                    DurationSeconds,
+                    decoder.ChannelIndex,
+                    decoder.BaudRate,
+                    maxAnnotations: MaximumCachedDecodeAnnotations));
+            }
         }
 
-        if (_decodeAnnotations.SequenceEqual(annotations)) {
+        var nextAnnotations = annotations.ToArray();
+        if (_decodeAnnotations.SequenceEqual(nextAnnotations)) {
             return;
         }
 
-        _decodeAnnotations = annotations;
+        _decodeAnnotations = nextAnnotations;
         OnPropertyChanged(nameof(DecodeAnnotations));
         OnPropertyChanged(nameof(DecodeSummary));
     }
@@ -851,10 +1198,56 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         }
 
         if (_isHardwareDeviceLoaded) {
-            return [];
+            return QueryHardwareDigitalSpans(widthPixels);
         }
 
         return _sessionService.QueryDigitalSpans(ViewportStartSeconds, SecondsPerPixel, widthPixels);
+    }
+
+    private NativeDigitalSpan[] QueryHardwareDigitalSpans(float widthPixels)
+    {
+        var channelCount = Math.Max(0, DigitalChannelCount);
+        if (channelCount == 0 || SecondsPerPixel <= 0.0) {
+            return [];
+        }
+
+        var captureEndSeconds = _hardwareCaptureStopwatch.IsRunning
+            ? Math.Max(DurationSeconds, _hardwareCaptureStopwatch.Elapsed.TotalSeconds)
+            : DurationSeconds;
+        if (captureEndSeconds <= ViewportStartSeconds) {
+            return [];
+        }
+
+        var viewportEndSeconds = ViewportStartSeconds + SecondsPerPixel * widthPixels;
+        var visibleEndSeconds = Math.Min(captureEndSeconds, viewportEndSeconds);
+        if (visibleEndSeconds <= ViewportStartSeconds) {
+            return [];
+        }
+
+        var maxVisibleX = (float)Math.Clamp((visibleEndSeconds - ViewportStartSeconds) / SecondsPerPixel, 0.0, widthPixels);
+        if (maxVisibleX <= 0.0F) {
+            return [];
+        }
+
+        var spans = new List<NativeDigitalSpan>(channelCount);
+        for (var channel = 0; channel < channelCount; channel++) {
+            spans.Add(new NativeDigitalSpan(0.0F, maxVisibleX, 0, 0, (byte)channel));
+        }
+
+        var pointSpacingPixels = 1.0 / (SelectedSampleRate.SamplesPerSecond * SecondsPerPixel);
+        if (double.IsFinite(pointSpacingPixels) && pointSpacingPixels >= HardwareDigitalPointMinimumPixelSpacing) {
+            var firstSampleIndex = Math.Max(0L, (long)Math.Ceiling(ViewportStartSeconds * SelectedSampleRate.SamplesPerSecond));
+            var lastSampleIndex = Math.Max(firstSampleIndex - 1, (long)Math.Floor(visibleEndSeconds * SelectedSampleRate.SamplesPerSecond));
+            for (var sampleIndex = firstSampleIndex; sampleIndex <= lastSampleIndex; sampleIndex++) {
+                var sampleSeconds = sampleIndex / (double)SelectedSampleRate.SamplesPerSecond;
+                var x = (float)Math.Clamp((sampleSeconds - ViewportStartSeconds) / SecondsPerPixel, 0.0, widthPixels);
+                for (var channel = 0; channel < channelCount; channel++) {
+                    spans.Add(new NativeDigitalSpan(x, x, 0, DigitalPointFlag, (byte)channel));
+                }
+            }
+        }
+
+        return spans.ToArray();
     }
 
     public NativeAnalogSegment[] QueryAnalogSegments(float widthPixels)
@@ -880,31 +1273,43 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             return [];
         }
 
-        if (IsDemoDeviceLoaded && DurationSeconds > 0.0 && SelectedDecoder.Kind == ProtocolDecoderKind.Uart) {
-            var annotations = _demoCapture.QueryUartAnnotations(
-                ViewportStartSeconds,
-                visibleEndSeconds,
-                DecoderChannelIndex,
-                DecoderBaudRate,
-                MaximumVisibleDecodeAnnotations + 1).ToArray();
-            if (annotations.Length > MaximumVisibleDecodeAnnotations) {
-                return [
-                    CreateNativeDecoderAnnotation(
+        if (IsDemoDeviceLoaded && DurationSeconds > 0.0) {
+            var nativeAnnotations = new List<NativeDecoderAnnotation>();
+            for (var row = 0; row < _configuredDecoders.Length; row++) {
+                var decoder = _configuredDecoders[row];
+                if (!IsDemoUartDecoderCompatible(decoder)) {
+                    continue;
+                }
+
+                var annotations = _demoCapture.QueryUartAnnotations(
+                    ViewportStartSeconds,
+                    visibleEndSeconds,
+                    decoder.ChannelIndex,
+                    decoder.BaudRate,
+                    MaximumVisibleDecodeAnnotations + 1).ToArray();
+                if (annotations.Length > MaximumVisibleDecodeAnnotations) {
+                    nativeAnnotations.Add(CreateNativeDecoderAnnotation(
                         annotations[0].StartSeconds,
                         visibleEndSeconds,
                         widthPixels,
-                        string.Empty),
-                ];
+                        string.Empty,
+                        (byte)row,
+                        decoder.Color.Rgb));
+                    continue;
+                }
+
+                nativeAnnotations.AddRange(annotations
+                    .Select(annotation => CreateNativeDecoderAnnotation(
+                        annotation.StartSeconds,
+                        annotation.EndSeconds,
+                        widthPixels,
+                        annotation.Text,
+                        (byte)row,
+                        decoder.Color.Rgb))
+                    .Where(annotation => annotation.X1 > annotation.X0));
             }
 
-            return annotations
-                .Select(annotation => CreateNativeDecoderAnnotation(
-                    annotation.StartSeconds,
-                    annotation.EndSeconds,
-                    widthPixels,
-                    annotation.Text))
-                .Where(annotation => annotation.X1 > annotation.X0)
-                .ToArray();
+            return nativeAnnotations.ToArray();
         }
 
         return _decodeAnnotations
@@ -913,16 +1318,28 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
                 annotation.StartSeconds,
                 annotation.EndSeconds,
                 widthPixels,
-                annotation.Text))
+                annotation.Text,
+                0,
+                AllDecoderColors[0].Rgb))
             .Where(annotation => annotation.X1 > annotation.X0)
             .ToArray();
+    }
+
+    private static bool IsDemoUartDecoderCompatible(ConfiguredDecoder decoder)
+    {
+        return decoder.Protocol.Kind == ProtocolDecoderKind.Uart
+            && decoder.DataBits == 8
+            && decoder.StopBits == "1"
+            && decoder.Parity == "None";
     }
 
     private NativeDecoderAnnotation CreateNativeDecoderAnnotation(
         double startSeconds,
         double endSeconds,
         float widthPixels,
-        string text)
+        string text,
+        byte rowIndex,
+        uint colorRgb)
     {
         var clippedStartSeconds = Math.Clamp(startSeconds, ViewportStartSeconds, ViewportStartSeconds + SecondsPerPixel * widthPixels);
         var clippedEndSeconds = Math.Clamp(
@@ -934,8 +1351,9 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         return new NativeDecoderAnnotation(
             Math.Clamp(x0, 0.0F, widthPixels),
             Math.Clamp(x1, 0.0F, widthPixels),
-            0,
-            text);
+            rowIndex,
+            text,
+            colorRgb);
     }
 
     public void Dispose()

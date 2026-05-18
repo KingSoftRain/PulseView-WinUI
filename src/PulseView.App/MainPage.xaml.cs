@@ -1,6 +1,8 @@
 using System.ComponentModel;
+using Microsoft.UI;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using PulseView.App.Controls;
 using PulseView.App.ViewModels;
 using Windows.Storage.Pickers;
@@ -26,6 +28,8 @@ public sealed partial class MainPage : Page
         InitializeComponent();
 
         InitializeCaptureControls();
+        InitializeDecoderColorButtons();
+        RootNavigationView.SelectedItem = MainNavigationItem;
         _viewModel.PropertyChanged += ViewModel_PropertyChanged;
         WaveformViewport.ViewportChanged += WaveformViewport_ViewportChanged;
         _acquisitionTimer.Tick += AcquisitionTimer_Tick;
@@ -76,7 +80,12 @@ public sealed partial class MainPage : Page
 
     private void ConnectDeviceButton_Click(object sender, RoutedEventArgs e)
     {
-        _viewModel.ConnectSelectedDevice();
+        if (_viewModel.IsSelectedDeviceLoaded) {
+            _viewModel.DisconnectSelectedDevice();
+        }
+        else {
+            _viewModel.ConnectSelectedDevice();
+        }
     }
 
     private void DeviceComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -160,6 +169,72 @@ public sealed partial class MainPage : Page
         _viewModel.SetDecoderBaudRate(baudRate);
     }
 
+    private void DecoderDataBitsComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_isRefreshingControls || DecoderDataBitsComboBox.SelectedItem is not int dataBits) {
+            return;
+        }
+
+        _viewModel.SetDecoderDataBits(dataBits);
+    }
+
+    private void DecoderStopBitsComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_isRefreshingControls || DecoderStopBitsComboBox.SelectedItem is not string stopBits) {
+            return;
+        }
+
+        _viewModel.SetDecoderStopBits(stopBits);
+    }
+
+    private void DecoderParityComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_isRefreshingControls || DecoderParityComboBox.SelectedItem is not string parity) {
+            return;
+        }
+
+        _viewModel.SetDecoderParity(parity);
+    }
+
+    private void DecoderAddButton_Click(object sender, RoutedEventArgs e)
+    {
+        _viewModel.AddConfiguredDecoder();
+    }
+
+    private void DecoderColorButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: DecoderColorOption color }) {
+            _viewModel.SetDecoderColor(color);
+        }
+    }
+
+    private void DecoderRowButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: int decoderId }) {
+            _viewModel.EditConfiguredDecoder(decoderId);
+        }
+    }
+
+    private void DecoderRowSettingsButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: int decoderId }) {
+            _viewModel.EditConfiguredDecoder(decoderId);
+            DecoderSettingsButton.Flyout?.ShowAt(DecoderSettingsButton);
+        }
+    }
+
+    private void DecoderRowDeleteButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: int decoderId }) {
+            _viewModel.RemoveConfiguredDecoder(decoderId);
+        }
+    }
+
+    private void RootNavigationView_SelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
+    {
+        UpdateSectionVisibility();
+    }
+
     private void ViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         RefreshView();
@@ -220,7 +295,6 @@ public sealed partial class MainPage : Page
         NativeRenderingVersionText.Text = _viewModel.NativeRenderingVersion;
         StatusText.Text = _viewModel.StatusMessage;
         DeviceStatusText.Text = _viewModel.DeviceStatusSummary;
-        TransportStatusText.Text = _viewModel.DeviceTransportSummary;
         CaptureSettingsText.Text = _viewModel.CaptureSettingsSummary;
         DecoderStatusText.Text = _viewModel.DecodeSummary;
         CurrentFileText.Text = string.IsNullOrWhiteSpace(_viewModel.CurrentFilePath)
@@ -234,11 +308,21 @@ public sealed partial class MainPage : Page
         QueueWaveformUpdate();
         OpenFileButton.IsEnabled = !_viewModel.IsBusy;
         ScanDeviceButton.IsEnabled = !_viewModel.IsBusy;
-        ConnectDeviceButton.IsEnabled = !_viewModel.IsBusy;
+        ConnectDeviceButton.IsEnabled = !_viewModel.IsBusy && _viewModel.CanLoadSelectedDevice;
         AcquisitionButton.IsEnabled = !_viewModel.IsBusy && _viewModel.CanAcquireSelectedDevice;
         UpdateAcquisitionButtonVisual();
+        UpdateConnectDeviceButtonVisual();
         UpdateDecoderSettingsVisibility();
-        TransportDetailListView.ItemsSource = _viewModel.DeviceConnectionDetails.ToArray();
+        UpdateDecoderColorSelection();
+        RefreshDecoderRows();
+        UpdateSectionVisibility();
+    }
+
+    private void UpdateConnectDeviceButtonVisual()
+    {
+        ConnectDeviceIdleIcon.Visibility = _viewModel.IsSelectedDeviceLoaded ? Visibility.Collapsed : Visibility.Visible;
+        ConnectDeviceLoadedIcon.Visibility = _viewModel.IsSelectedDeviceLoaded ? Visibility.Visible : Visibility.Collapsed;
+        ToolTipService.SetToolTip(ConnectDeviceButton, _viewModel.IsSelectedDeviceLoaded ? "Disconnect device" : "Load selected device");
     }
 
     private void UpdateAcquisitionButtonVisual()
@@ -253,6 +337,7 @@ public sealed partial class MainPage : Page
         var isUartDecoder = _viewModel.SelectedDecoder.Kind == ProtocolDecoderKind.Uart;
         UartDecoderSettingsPanel.Visibility = isUartDecoder ? Visibility.Visible : Visibility.Collapsed;
         DecoderSettingsButton.IsEnabled = !_viewModel.IsBusy && isUartDecoder;
+        DecoderAddButton.IsEnabled = !_viewModel.IsBusy && _viewModel.SelectedDecoder.Kind != ProtocolDecoderKind.None;
     }
 
     private void InitializeCaptureControls()
@@ -262,6 +347,133 @@ public sealed partial class MainPage : Page
         TriggerEdgeComboBox.ItemsSource = _viewModel.TriggerEdgeOptions;
         DecoderComboBox.ItemsSource = _viewModel.DecoderOptions;
         DecoderBaudComboBox.ItemsSource = _viewModel.DecoderBaudRateOptions;
+        DecoderDataBitsComboBox.ItemsSource = _viewModel.DecoderDataBitOptions;
+        DecoderStopBitsComboBox.ItemsSource = _viewModel.DecoderStopBitOptions;
+        DecoderParityComboBox.ItemsSource = _viewModel.DecoderParityOptions;
+    }
+
+    private void InitializeDecoderColorButtons()
+    {
+        DecoderColorGrid.Children.Clear();
+        for (var index = 0; index < _viewModel.DecoderColorOptions.Count; index++) {
+            var color = _viewModel.DecoderColorOptions[index];
+            var button = new Button {
+                Width = 28,
+                Height = 24,
+                MinWidth = 0,
+                Padding = new Thickness(0),
+                Background = new SolidColorBrush(ToColor(color)),
+                BorderBrush = new SolidColorBrush(Colors.Transparent),
+                BorderThickness = new Thickness(1),
+                Tag = color,
+            };
+            ToolTipService.SetToolTip(button, color.Label);
+            button.Click += DecoderColorButton_Click;
+            Grid.SetRow(button, index / 4);
+            Grid.SetColumn(button, index % 4);
+            DecoderColorGrid.Children.Add(button);
+        }
+    }
+
+    private void UpdateDecoderColorSelection()
+    {
+        foreach (var child in DecoderColorGrid.Children.OfType<Button>()) {
+            var isSelected = child.Tag is DecoderColorOption color && color == _viewModel.DecoderColor;
+            child.BorderBrush = new SolidColorBrush(isSelected ? Colors.White : Colors.Transparent);
+            child.BorderThickness = new Thickness(isSelected ? 2 : 1);
+        }
+    }
+
+    private void RefreshDecoderRows()
+    {
+        DecoderRowsPanel.Children.Clear();
+        foreach (var decoder in _viewModel.ConfiguredDecoders) {
+            var row = new Grid {
+                ColumnSpacing = 8,
+                Width = 340,
+            };
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            var decoderButton = new Button {
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                Tag = decoder.Id,
+                Content = CreateDecoderRowContent(decoder),
+            };
+            decoderButton.Click += DecoderRowButton_Click;
+            Grid.SetColumn(decoderButton, 0);
+            row.Children.Add(decoderButton);
+
+            var settingsButton = CreateDecoderRowIconButton(Symbol.Setting, "Decoder settings", decoder.Id);
+            settingsButton.Click += DecoderRowSettingsButton_Click;
+            Grid.SetColumn(settingsButton, 1);
+            row.Children.Add(settingsButton);
+
+            var deleteButton = CreateDecoderRowIconButton(Symbol.Delete, "Delete decoder", decoder.Id);
+            deleteButton.Click += DecoderRowDeleteButton_Click;
+            Grid.SetColumn(deleteButton, 2);
+            row.Children.Add(deleteButton);
+
+            DecoderRowsPanel.Children.Add(row);
+        }
+    }
+
+    private static Grid CreateDecoderRowContent(ConfiguredDecoder decoder)
+    {
+        var content = new Grid {
+            ColumnSpacing = 8,
+        };
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        content.Children.Add(new Border {
+            Width = 12,
+            Height = 12,
+            CornerRadius = new CornerRadius(6),
+            Background = new SolidColorBrush(ToColor(decoder.Color)),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+
+        var label = new TextBlock {
+            Text = decoder.DisplayName,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(label, 1);
+        content.Children.Add(label);
+        return content;
+    }
+
+    private static Button CreateDecoderRowIconButton(Symbol symbol, string tooltip, int decoderId)
+    {
+        var button = new Button {
+            Width = 38,
+            Height = 34,
+            MinWidth = 0,
+            Padding = new Thickness(0),
+            Tag = decoderId,
+            Content = new SymbolIcon(symbol),
+        };
+        ToolTipService.SetToolTip(button, tooltip);
+        return button;
+    }
+
+    private void UpdateSectionVisibility()
+    {
+        if (MainSectionPanel is null || DecoderSectionPanel is null || ExpressionSectionPanel is null) {
+            return;
+        }
+
+        var selectedTag = (RootNavigationView?.SelectedItem as NavigationViewItem)?.Tag as string ?? "Main";
+        MainSectionPanel.Visibility = selectedTag == "Main" ? Visibility.Visible : Visibility.Collapsed;
+        DecoderSectionPanel.Visibility = selectedTag == "Decoder" ? Visibility.Visible : Visibility.Collapsed;
+        ExpressionSectionPanel.Visibility = selectedTag == "Expression" ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private static Windows.UI.Color ToColor(DecoderColorOption color)
+    {
+        return Windows.UI.Color.FromArgb(0xFF, color.Red, color.Green, color.Blue);
     }
 
     private void RefreshControlSelections()
@@ -281,6 +493,9 @@ public sealed partial class MainPage : Page
             DecoderChannelComboBox.ItemsSource = _viewModel.DecoderChannelOptions;
             DecoderChannelComboBox.SelectedIndex = _viewModel.DecoderChannelIndex;
             DecoderBaudComboBox.SelectedItem = _viewModel.DecoderBaudRate;
+            DecoderDataBitsComboBox.SelectedItem = _viewModel.DecoderDataBits;
+            DecoderStopBitsComboBox.SelectedItem = _viewModel.DecoderStopBits;
+            DecoderParityComboBox.SelectedItem = _viewModel.DecoderParity;
         }
         finally {
             _isRefreshingControls = false;

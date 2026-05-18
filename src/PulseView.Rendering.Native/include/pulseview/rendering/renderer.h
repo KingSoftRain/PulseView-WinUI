@@ -38,9 +38,9 @@ struct pv_rendering_decoder_annotation {
     float x0;
     float x1;
     unsigned char row_index;
-    unsigned char reserved1;
-    unsigned char reserved2;
-    unsigned char reserved3;
+    unsigned char color_red;
+    unsigned char color_green;
+    unsigned char color_blue;
     wchar_t text[32];
 };
 

@@ -160,9 +160,12 @@ public sealed class ShellViewModelTests
 
         Assert.HasCount(2, viewModel.DeviceOptions);
         Assert.IsFalse(viewModel.DeviceOptions.Any(device => device.Kind == CaptureDeviceKind.SLogicCombo8OtherMode));
-        Assert.AreEqual(logicDevice, viewModel.SelectedDevice);
+        Assert.AreEqual("SLogic Combo 8", viewModel.SelectedDevice.DisplayName);
         Assert.IsTrue(viewModel.CanAcquireSelectedDevice);
-        Assert.AreEqual("USB TO LA", viewModel.CurrentFilePath);
+        Assert.IsTrue(viewModel.CanLoadSelectedDevice);
+        Assert.IsTrue(viewModel.IsSelectedDeviceLoaded);
+        Assert.AreEqual("Device status: ready", viewModel.DeviceStatusSummary);
+        Assert.AreEqual("SLogic Combo 8", viewModel.CurrentFilePath);
         Assert.AreEqual(8, viewModel.SignalCount);
         Assert.AreEqual(8, viewModel.DigitalChannelCount);
     }
@@ -191,10 +194,11 @@ public sealed class ShellViewModelTests
         viewModel.SelectDevice(device);
         viewModel.ConnectSelectedDevice();
 
-        Assert.AreEqual("USB TO LA", viewModel.CurrentFilePath);
+        Assert.AreEqual("SLogic Combo 8", viewModel.CurrentFilePath);
         Assert.AreEqual(connection.Summary, viewModel.DeviceTransportSummary);
         Assert.HasCount(2, viewModel.DeviceConnectionDetails);
         Assert.IsTrue(viewModel.CanAcquireSelectedDevice);
+        Assert.IsTrue(viewModel.IsSelectedDeviceLoaded);
 
         viewModel.StartAcquisition();
         Thread.Sleep(10);
@@ -202,11 +206,137 @@ public sealed class ShellViewModelTests
 
         Assert.IsTrue(viewModel.IsAcquiring);
         Assert.IsGreaterThan(0.0, viewModel.DurationSeconds);
+        var hardwareSpans = viewModel.QueryDigitalSpans(640.0F);
+        Assert.HasCount(8, hardwareSpans);
+        CollectionAssert.AreEqual(
+            Enumerable.Range(0, 8).Select(channel => (byte)channel).ToArray(),
+            hardwareSpans.Select(span => span.ChannelIndex).ToArray());
+        Assert.IsTrue(hardwareSpans.All(span => span.X0 == 0.0F && span.X1 > span.X0 && span.Level == 0 && span.EdgeFlags == 0));
 
         viewModel.StopAcquisition();
 
         Assert.IsFalse(viewModel.IsAcquiring);
-        Assert.AreEqual("USB TO LA acquisition stopped", viewModel.StatusMessage);
+        Assert.AreEqual("SLogic Combo 8 acquisition stopped", viewModel.StatusMessage);
+
+        viewModel.DisconnectSelectedDevice();
+
+        Assert.IsFalse(viewModel.IsSelectedDeviceLoaded);
+        Assert.IsTrue(viewModel.CanLoadSelectedDevice);
+        Assert.AreEqual("Device disconnected", viewModel.StatusMessage);
+        Assert.AreEqual(0, viewModel.SignalCount);
+        Assert.AreEqual("Device status: ready", viewModel.DeviceStatusSummary);
+    }
+
+    [TestMethod]
+    public void ShellViewModelStopsSLogicAcquisitionAtSelectedSampleCount()
+    {
+        var device = new CaptureDeviceOption(
+            @"USB\VID_359F&PID_0300\SI_8CH",
+            "USB TO LA",
+            CaptureDeviceKind.SLogicCombo8Logic,
+            "SLogic Combo 8",
+            "Logic-analyzer mode detected.",
+            CanAcquire: true,
+            "{CDB3B5AD-293B-4663-AA36-1AAE46463776}");
+        using var viewModel = new ShellViewModel(
+            new SessionService(),
+            new FakeHardwareDeviceProbe(device),
+            new FakeHardwareTransportInspector(new CaptureDeviceConnection(true, "WinUSB open", [])));
+
+        viewModel.SetSampleCount(viewModel.SampleCountOptions.First(option => option.Samples == 100_000));
+        viewModel.RefreshDevices();
+        viewModel.SelectDevice(device);
+        viewModel.ConnectSelectedDevice();
+        viewModel.StartAcquisition();
+        Thread.Sleep(25);
+        viewModel.RefreshAcquisition();
+
+        Assert.IsFalse(viewModel.IsAcquiring);
+        Assert.AreEqual(100_000.0 / 10_000_000.0, viewModel.DurationSeconds, 1.0e-9);
+        Assert.AreEqual("SLogic Combo 8 acquisition complete", viewModel.StatusMessage);
+        Assert.HasCount(8, viewModel.QueryDigitalSpans(640.0F));
+    }
+
+    [TestMethod]
+    public void ShellViewModelShowsSLogicSamplePointsWhenSamplesAreSeparated()
+    {
+        var device = new CaptureDeviceOption(
+            @"USB\VID_359F&PID_0300\SI_8CH",
+            "USB TO LA",
+            CaptureDeviceKind.SLogicCombo8Logic,
+            "SLogic Combo 8",
+            "Logic-analyzer mode detected.",
+            CanAcquire: true,
+            "{CDB3B5AD-293B-4663-AA36-1AAE46463776}");
+        using var viewModel = new ShellViewModel(
+            new SessionService(),
+            new FakeHardwareDeviceProbe(device),
+            new FakeHardwareTransportInspector(new CaptureDeviceConnection(true, "WinUSB open", [])));
+
+        viewModel.RefreshDevices();
+        viewModel.SelectDevice(device);
+        viewModel.ConnectSelectedDevice();
+        viewModel.StartAcquisition();
+        Thread.Sleep(10);
+        viewModel.RefreshAcquisition();
+        viewModel.StopAcquisition();
+
+        Assert.IsFalse(viewModel.QueryDigitalSpans(640.0F).Any(span => (span.EdgeFlags & 8) != 0));
+
+        for (var step = 0; step < 16; step++) {
+            viewModel.ZoomIn();
+        }
+
+        Assert.IsTrue(viewModel.QueryDigitalSpans(640.0F).Any(span => (span.EdgeFlags & 8) != 0));
+    }
+
+    [TestMethod]
+    public void ShellViewModelMarksFailedHardwareConnectionUnknown()
+    {
+        var device = new CaptureDeviceOption(
+            @"USB\VID_359F&PID_0300\SI_8CH",
+            "USB TO LA",
+            CaptureDeviceKind.SLogicCombo8Logic,
+            "SLogic Combo 8",
+            "Logic-analyzer mode detected.",
+            CanAcquire: true,
+            "{CDB3B5AD-293B-4663-AA36-1AAE46463776}");
+        using var viewModel = new ShellViewModel(
+            new SessionService(),
+            new FakeHardwareDeviceProbe(device),
+            new FakeHardwareTransportInspector(new CaptureDeviceConnection(false, "No WinUSB interface", [])));
+
+        viewModel.RefreshDevices();
+        viewModel.SelectDevice(device);
+        viewModel.ConnectSelectedDevice();
+
+        Assert.IsFalse(viewModel.IsSelectedDeviceLoaded);
+        Assert.IsFalse(viewModel.CanLoadSelectedDevice);
+        Assert.AreEqual("Device status: unknown", viewModel.DeviceStatusSummary);
+    }
+
+    [TestMethod]
+    public void ShellViewModelMarksMissingSLogicDisconnectedDuringScan()
+    {
+        var device = new CaptureDeviceOption(
+            @"USB\VID_359F&PID_0300\SI_8CH",
+            "USB TO LA",
+            CaptureDeviceKind.SLogicCombo8Logic,
+            "SLogic Combo 8",
+            "Logic-analyzer mode detected.",
+            CanAcquire: true,
+            "{CDB3B5AD-293B-4663-AA36-1AAE46463776}");
+        using var viewModel = new ShellViewModel(
+            new SessionService(),
+            new FakeHardwareDeviceProbe(device),
+            new FakeHardwareTransportInspector(new CaptureDeviceConnection(false, "No WinUSB device interface path was found for SLogic Combo 8.", [])));
+
+        viewModel.RefreshDevices();
+        viewModel.SelectDevice(viewModel.DeviceOptions.Single(option => option.Kind == CaptureDeviceKind.SLogicCombo8Logic));
+
+        Assert.IsFalse(viewModel.IsSelectedDeviceLoaded);
+        Assert.IsFalse(viewModel.CanLoadSelectedDevice);
+        Assert.AreEqual("Device status: disconnected", viewModel.DeviceStatusSummary);
     }
 
     [TestMethod]
@@ -215,6 +345,7 @@ public sealed class ShellViewModelTests
         using var viewModel = new ShellViewModel();
 
         viewModel.LoadDemoDevice();
+        viewModel.AddConfiguredDecoder();
         viewModel.StartDemoCapture();
         Thread.Sleep(25);
         viewModel.RefreshAcquisition();
@@ -225,7 +356,53 @@ public sealed class ShellViewModelTests
         Assert.IsGreaterThan(0, viewModel.QueryDecoderAnnotations(640.0F).Length);
         Assert.AreEqual("UART", viewModel.DecodeAnnotations[0].Decoder);
         Assert.AreEqual("H", viewModel.DecodeAnnotations[0].Text);
+        Assert.AreEqual("UART", viewModel.SelectedDecoder.Label);
+        Assert.AreEqual(8, viewModel.DecoderDataBits);
+        Assert.AreEqual("1", viewModel.DecoderStopBits);
+        Assert.AreEqual("None", viewModel.DecoderParity);
+        Assert.AreEqual("8N1", viewModel.ConfiguredDecoders[0].FrameFormat);
         Assert.IsTrue(viewModel.DecodeSummary.Contains("annotations", StringComparison.Ordinal));
+
+        viewModel.EditConfiguredDecoder(viewModel.ConfiguredDecoders[0].Id);
+        viewModel.SetDecoderParity("Even");
+
+        Assert.IsEmpty(viewModel.DecodeAnnotations);
+    }
+
+    [TestMethod]
+    public void ShellViewModelAddsEditsAndRemovesDecoderRows()
+    {
+        using var viewModel = new ShellViewModel();
+
+        var blue = viewModel.DecoderColorOptions.First(color => color.Label == "Blue");
+        viewModel.SetDecoderColor(blue);
+        viewModel.AddConfiguredDecoder();
+
+        Assert.HasCount(1, viewModel.ConfiguredDecoders);
+        Assert.AreEqual(1, viewModel.DecoderRowCount);
+        Assert.AreEqual(blue, viewModel.ConfiguredDecoders[0].Color);
+
+        viewModel.LoadDemoDevice();
+        viewModel.StartDemoCapture();
+        Thread.Sleep(25);
+        viewModel.RefreshAcquisition();
+        viewModel.StopDemoCapture();
+
+        var nativeAnnotations = viewModel.QueryDecoderAnnotations(640.0F);
+        Assert.IsGreaterThan(0, nativeAnnotations.Length);
+        Assert.IsTrue(nativeAnnotations.All(annotation => annotation.RowIndex == 0));
+        Assert.IsTrue(nativeAnnotations.All(annotation => annotation.ColorRed == blue.Red));
+
+        viewModel.EditConfiguredDecoder(viewModel.ConfiguredDecoders[0].Id);
+        viewModel.SetDecoderChannelIndex(2);
+
+        Assert.AreEqual(2, viewModel.ConfiguredDecoders[0].ChannelIndex);
+
+        viewModel.RemoveConfiguredDecoder(viewModel.ConfiguredDecoders[0].Id);
+
+        Assert.IsEmpty(viewModel.ConfiguredDecoders);
+        Assert.AreEqual(0, viewModel.DecoderRowCount);
+        Assert.IsEmpty(viewModel.QueryDecoderAnnotations(640.0F));
     }
 
     [TestMethod]
@@ -234,6 +411,7 @@ public sealed class ShellViewModelTests
         using var viewModel = new ShellViewModel();
 
         viewModel.LoadDemoDevice();
+        viewModel.AddConfiguredDecoder();
         viewModel.StartDemoCapture();
         Thread.Sleep(45);
         viewModel.RefreshAcquisition();
@@ -254,6 +432,7 @@ public sealed class ShellViewModelTests
         const float widthPixels = 640.0F;
 
         viewModel.LoadDemoDevice();
+        viewModel.AddConfiguredDecoder();
         viewModel.StartDemoCapture();
         Thread.Sleep(180);
         viewModel.RefreshAcquisition();
@@ -275,6 +454,7 @@ public sealed class ShellViewModelTests
         const float widthPixels = 640.0F;
 
         viewModel.LoadDemoDevice();
+        viewModel.AddConfiguredDecoder();
         viewModel.StartDemoCapture();
         Thread.Sleep(30);
         viewModel.RefreshAcquisition();

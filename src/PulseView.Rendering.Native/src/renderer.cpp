@@ -46,6 +46,9 @@ struct DecoderAnnotation {
     float x0;
     float x1;
     std::uint8_t row_index;
+    std::uint8_t color_red;
+    std::uint8_t color_green;
+    std::uint8_t color_blue;
     std::wstring text;
 };
 
@@ -399,6 +402,9 @@ public:
                 .x0 = annotation.x0,
                 .x1 = annotation.x1,
                 .row_index = annotation.row_index,
+                .color_red = annotation.color_red,
+                .color_green = annotation.color_green,
+                .color_blue = annotation.color_blue,
                 .text = std::wstring(annotation.text, annotation.text + text_length),
             });
         }
@@ -807,9 +813,17 @@ private:
             }
 
             const auto rect = D2D1::RectF(x0, top, right, (std::max)(bottom, top + 18.0F));
+            ComPtr<ID2D1SolidColorBrush> row_brush;
+            const auto row_color = D2D1::ColorF(
+                static_cast<float>(annotation.color_red) / 255.0F,
+                static_cast<float>(annotation.color_green) / 255.0F,
+                static_cast<float>(annotation.color_blue) / 255.0F,
+                1.0F);
+            const auto hr = d2d_context_->CreateSolidColorBrush(row_color, &row_brush);
+            auto* border_brush = SUCCEEDED(hr) ? row_brush.Get() : decoder_border_brush_.Get();
 
             d2d_context_->FillRectangle(rect, decoder_fill_brush_.Get());
-            d2d_context_->DrawRectangle(rect, decoder_border_brush_.Get(), 1.0F);
+            d2d_context_->DrawRectangle(rect, border_brush, 1.0F);
         }
     }
 

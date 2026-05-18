@@ -300,7 +300,7 @@ public sealed class WaveformPanel : UserControl
         }
 
         var decoderRow = track - _digitalChannelCount - _analogChannelCount;
-        return decoderRow == 0 ? "UART" : $"DEC{decoderRow}";
+        return decoderRow == 0 ? "UART" : $"UART{decoderRow + 1}";
     }
 
     private void AddTrackLabel(int track, string text, double top, double bottom)

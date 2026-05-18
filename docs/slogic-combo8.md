@@ -7,7 +7,7 @@ Implemented in this milestone:
 
 - The device selector is now a capture-source list. It includes the virtual
   `Demo Device` and real logic-analyzer devices only.
-- SLogic Combo 8 logic mode is displayed as `USB TO LA`; debugger, serial, and
+- SLogic Combo 8 logic mode is displayed as `SLogic Combo 8`; debugger, serial, and
   other alternate modes are intentionally filtered out of the selector.
 - Device scan looks for Windows USB registry entries that match the logic
   analyzer identity (`USB TO LA`, `SLogic`, or known Sipeed VID text).
@@ -18,8 +18,10 @@ Implemented in this milestone:
 - SLogic connect now opens the WinUSB interface in diagnostics mode and reports
   the device path, interface descriptor, and endpoint pipes. Acquisition command
   transfer is still intentionally gated behind a later protocol step.
-- Loading `USB TO LA` creates an empty 8-channel digital session so stale demo
-  waveform data is cleared while the real streaming transport is still pending.
+- Loading `SLogic Combo 8` creates an 8-channel digital session and renders
+  low-level idle baselines while the real streaming transport is still pending.
+  When the time scale separates samples clearly, the same view also renders
+  sample point markers at the selected sample rate.
 - The Windows sample-rate list is limited by active channel count:
   - 1-2 channels: up to 80 MHz.
   - 3-4 channels: up to 40 MHz.
@@ -27,8 +29,9 @@ Implemented in this milestone:
     Windows transport limit.
 - Demo capture now includes a D0 UART 115200 8N1 stream so the decoder panel can
   be tested against visible waveform data.
-- UART decode annotations are produced from the demo source and displayed below
-  the waveform.
+- UART decode annotations are produced from the demo source after a decoder is
+  added from the Decoder page. Each decoder row can keep its own settings and
+  line color.
 
 Hardware notes:
 

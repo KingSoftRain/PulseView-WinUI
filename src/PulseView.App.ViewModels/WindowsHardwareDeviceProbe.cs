@@ -75,7 +75,7 @@ public sealed class WindowsHardwareDeviceProbe : IHardwareDeviceProbe
         if ((hasLogicModePid || hasLogicModeName) && (!hasSLogicVid || hasLogicModePid)) {
             return new CaptureDeviceOption(
                 instanceId,
-                "USB TO LA",
+                "SLogic Combo 8",
                 CaptureDeviceKind.SLogicCombo8Logic,
                 "SLogic Combo 8",
                 "Logic-analyzer mode detected. WinUSB transport diagnostics are available.",

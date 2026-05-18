@@ -10,21 +10,21 @@ public struct NativeDecoderAnnotation
     public float X0;
     public float X1;
     public byte RowIndex;
-    private byte _reserved1;
-    private byte _reserved2;
-    private byte _reserved3;
+    public byte ColorRed;
+    public byte ColorGreen;
+    public byte ColorBlue;
 
     [MarshalAs(UnmanagedType.ByValTStr, SizeConst = TextCapacity)]
     public string Text;
 
-    public NativeDecoderAnnotation(float x0, float x1, byte rowIndex, string text)
+    public NativeDecoderAnnotation(float x0, float x1, byte rowIndex, string text, uint colorRgb = 0xFACC15)
     {
         X0 = x0;
         X1 = x1;
         RowIndex = rowIndex;
-        _reserved1 = 0;
-        _reserved2 = 0;
-        _reserved3 = 0;
+        ColorRed = (byte)((colorRgb >> 16) & 0xFF);
+        ColorGreen = (byte)((colorRgb >> 8) & 0xFF);
+        ColorBlue = (byte)(colorRgb & 0xFF);
         Text = text.Length < TextCapacity ? text : text[..(TextCapacity - 1)];
     }
 }

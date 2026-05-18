@@ -41,7 +41,7 @@ public sealed class WinUsbHardwareTransportInspector : IHardwareTransportInspect
         if (diagnostics.Count == 0) {
             return new CaptureDeviceConnection(
                 false,
-                "No WinUSB device interface path was found for USB TO LA.",
+                "No WinUSB device interface path was found for SLogic Combo 8.",
                 [$"Interface GUID: {interfaceGuid}"]);
         }
 
